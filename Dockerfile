@@ -8,6 +8,7 @@ COPY templates ./templates
 COPY static ./static
 ENV NARTO_CACHE=/data/narto_cache
 ENV NARTO_CACHE_MAX_MB=10240
+ENV NARTO_BASE_PATH=/narto
 ENV PORT=5000
 ENV HOST=0.0.0.0
 RUN mkdir -p /data/narto_cache

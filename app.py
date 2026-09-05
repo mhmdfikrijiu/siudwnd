@@ -17,6 +17,27 @@ import nartodrama_downloader as nd
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
 
+BASE_PATH = (os.environ.get("NARTO_BASE_PATH") or os.environ.get("BASE_PATH") or "").strip().rstrip("/")
+if BASE_PATH and not BASE_PATH.startswith("/"):
+    BASE_PATH = "/" + BASE_PATH
+if BASE_PATH:
+    _orig_wsgi = app.wsgi_app
+
+    class _PrefixMiddleware:
+        def __init__(self, inner, prefix):
+            self.inner = inner
+            self.prefix = prefix
+
+        def __call__(self, environ, start_response):
+            path = environ.get("PATH_INFO", "") or "/"
+            if path == self.prefix or path.startswith(self.prefix + "/"):
+                environ["SCRIPT_NAME"] = (environ.get("SCRIPT_NAME", "") or "") + self.prefix
+                environ["PATH_INFO"] = path[len(self.prefix) :] or "/"
+            return self.inner(environ, start_response)
+
+    app.wsgi_app = _PrefixMiddleware(_orig_wsgi, BASE_PATH)
+    app.config["APPLICATION_ROOT"] = BASE_PATH
+
 CACHE = pathlib.Path(os.environ.get("NARTO_CACHE") or pathlib.Path(tempfile.gettempdir()) / "narto_cache")
 CACHE.mkdir(exist_ok=True, parents=True)
 

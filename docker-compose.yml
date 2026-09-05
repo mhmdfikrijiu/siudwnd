@@ -2,12 +2,13 @@ services:
   narto:
     build: .
     ports:
-      - "5000:5000"
+      - "127.0.0.1:5000:5000"
     volumes:
       - narto_cache:/data/narto_cache
     environment:
       - NARTO_CACHE=/data/narto_cache
       - NARTO_CACHE_MAX_MB=10240
+      - NARTO_BASE_PATH=/narto
       - PORT=5000
     restart: unless-stopped
 
