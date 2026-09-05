@@ -82,6 +82,7 @@
 
 <footer class="footer">Butuh <code>ffmpeg</code> di PATH. Cache di <code>%TEMP%\narto_cache</code> — file valid di-skip otomatis.</footer>
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
+<script>window.BASE_PATH="{{ request.script_root }}";</script>
 <script src="{{ url_for('static', filename='js/app.js') }}"></script>
 </body>
 </html>

@@ -1,3 +1,5 @@
+const BASE = (window.BASE_PATH || "").replace(/\/$/, "");
+const api = (p) => `${BASE}${p}`;
 const $ = (s, r=document) => r.querySelector(s);
 
 let SLUG = "";
@@ -57,7 +59,7 @@ function finishProgress(ok, msg, err){
 }
 
 async function pollJob(jobId){
-  const r = await fetch(`/api/progress/${jobId}`);
+  const r = await fetch(api(`/api/progress/${jobId}`));
   const j = await r.json();
   if(!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
   const pct = Math.max(0, Math.min(100, j.progress ?? 0));
@@ -65,7 +67,7 @@ async function pollJob(jobId){
   if(j.status === "done"){
     finishProgress(true, "Siap — download otomatis…");
     log(`[done] ${j.message}`);
-    window.location.href = `/api/download/${jobId}`;
+    window.location.href = api(`/api/download/${jobId}`);
     toast("Download dimulai");
   } else if(j.status === "error"){
     finishProgress(false, j.message || "Gagal", j.error || j.traceback || "");
@@ -80,6 +82,7 @@ async function startJob(path, nums, label){
   showProgress(label === "full" ? "FULL — gabung jadi 1 MP4" : "ZIP — bungkus episode");
   setActionsBusy(true);
   log(`[${label}] ${nums.length} episode -> ${path}`);
+  path = api(path);
   try{
     const r = await fetch(path, {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({slug: SLUG, episodes: nums})});
     const j = await r.json();
@@ -114,7 +117,7 @@ function render(){
       <td><input type="checkbox" class="ck" data-n="${ep.n}" checked></td>
       <td>Ep${String(ep.n).padStart(2,"0")}</td>
       <td>${ep.title}</td>
-      <td><a href="/api/mp4/${SLUG}/${ep.n}" target="_blank" rel="noopener"><button class="btn ghost small">MP4</button></a></td>
+      <td><a href="${api(`/api/mp4/${SLUG}/${ep.n}`)}" target="_blank" rel="noopener"><button class="btn ghost small">MP4</button></a></td>
     `;
     tb.appendChild(tr);
   }
@@ -142,7 +145,7 @@ $("#btnResolve").addEventListener("click", async ()=>{
   $("#meta").textContent = "Loading…";
   log(`[resolve] ${url}`);
   try{
-    const r = await fetch("/api/resolve", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({url})});
+    const r = await fetch(api("/api/resolve"), {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({url})});
     const j = await r.json();
     if(!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
     SLUG = j.slug;
