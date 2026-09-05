@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Narto Downloader — universal</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/">
+      <span class="brand-mark">N</span>
+      <span class="brand-text">Narto<span>Downloader</span></span>
+      <span class="badge">universal</span>
+    </a>
+    <span class="topbar-hint">paste link drama apa aja — auto detect jumlah episode</span>
+  </div>
+</header>
+
+<main class="container">
+  <section class="card hero">
+    <h1>Download drama <span>narto-drama.com</span> jadi 1 file</h1>
+    <p>Paste link <code>/detail/watch/&lt;slug&gt;</code> — sistem ambil <code>episodeItemsRaw</code> &amp; gabung jadi <b>FULL MP4</b>. Semua drama, jumlah episode menyesuaikan otomatis.</p>
+    <div class="field">
+      <input id="url" type="url" placeholder="https://narto-drama.com/detail/watch/guruku-yang-terkuat-pura-pura-lemah-s2" spellcheck="false">
+      <button id="btnResolve" class="btn primary"><span class="btn-label">Cek Episode</span><span class="spinner" aria-hidden="true"></span></button>
+    </div>
+    <div id="meta" class="meta"></div>
+  </section>
+
+  <section id="progressCard" class="card progress-card hidden">
+    <div class="progress-head">
+      <span class="progress-title"><span class="spinner sm"></span> <span id="progressLabel">Memproses…</span></span>
+      <span id="progressPct" class="progress-pct">0%</span>
+    </div>
+    <div class="progress-track"><div id="progressBar" class="progress-bar" style="width:0%"></div></div>
+    <div id="progressMsg" class="progress-msg">Antri…</div>
+    <div id="progressErr" class="progress-err hidden"></div>
+  </section>
+
+  <section id="dramaCard" class="card drama hidden">
+    <img id="poster" class="poster" alt="" loading="lazy">
+    <div class="drama-info">
+      <h2 id="title"></h2>
+      <div class="drama-sub">
+        <span id="total" class="pill"></span>
+        <span id="slug" class="muted"></span>
+        <span id="estimate" class="muted"></span>
+      </div>
+      <div id="actions" class="actions">
+        <button id="btnCheck" class="btn ghost">Pilih semua</button>
+        <button id="btnUncheck" class="btn ghost">Kosongkan</button>
+        <button id="btnFull" class="btn dark">FULL terpilih (1 MP4)</button>
+        <button id="btnFullAll" class="btn dark">FULL semua</button>
+        <button id="btnZip" class="btn">ZIP terpilih</button>
+        <span id="selInfo" class="sel-info"></span>
+      </div>
+      <p class="hint">Rekomendasi: <b>FULL 1 MP4</b> paling praktis (langsung play). ZIP untuk file per-episode. MP4 satuan untuk preview.</p>
+    </div>
+  </section>
+
+  <section id="listCard" class="card hidden">
+    <div class="list-head">
+      <label class="check"><input type="checkbox" id="master" checked> <span>Semua</span></label>
+      <input id="filter" type="search" placeholder="Filter episode… (cth: 1, 10)">
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th style="width:44px"></th><th style="width:68px">Ep</th><th>Judul</th><th style="width:96px">Aksi</th></tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+    <div id="empty" class="empty hidden">Tidak ada episode cocok.</div>
+  </section>
+
+  <section class="card log-card">
+    <div class="log-head"><span>Log</span><button id="btnClearLog" class="btn ghost small">Clear</button></div>
+    <pre id="log"></pre>
+  </section>
+</main>
+
+<footer class="footer">Butuh <code>ffmpeg</code> di PATH. Cache di <code>%TEMP%\narto_cache</code> — file valid di-skip otomatis.</footer>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
