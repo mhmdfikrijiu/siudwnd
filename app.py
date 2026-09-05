@@ -405,21 +405,33 @@ def download_job(job_id):
             return jsonify(error=f"job belum siap: {j.get('status')}"), 400
         path = j.get("result_path")
         name = j.get("result_name") or f"{job_id}.bin"
-    if not path or not pathlib.Path(path).exists():
+    p = pathlib.Path(path) if path else None
+    if not p or not p.exists():
         return jsonify(error="file sudah dihapus / expired"), 410
-    mimetype = "video/mp4" if path.endswith(".mp4") else "application/zip"
+    mimetype = "video/mp4" if str(p).endswith(".mp4") else "application/zip"
 
-    @after_this_request
-    def cleanup(response):
+    def _delayed_cleanup(pth: pathlib.Path, jid: str):
         try:
-            os.remove(path)
+            pth.unlink(missing_ok=True)
         except Exception:
             pass
         with JOBS_LOCK:
-            JOBS.pop(job_id, None)
+            JOBS.pop(jid, None)
+
+    @after_this_request
+    def schedule_cleanup(response):
+        try:
+            ttl = int(os.environ.get("NARTO_RESULT_TTL", "3600"))
+        except Exception:
+            ttl = 3600
+        threading.Timer(ttl, _delayed_cleanup, args=(p, job_id)).start()
         return response
 
-    return send_file(path, mimetype=mimetype, as_attachment=True, download_name=name)
+    resp = send_file(str(p), mimetype=mimetype, as_attachment=True, download_name=name, conditional=True, etag=True, max_age=0)
+    resp.headers["Accept-Ranges"] = "bytes"
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["X-Accel-Buffering"] = "no"
+    return resp
 
 
 @app.get("/health")
