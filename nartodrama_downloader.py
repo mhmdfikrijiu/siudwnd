@@ -55,12 +55,13 @@ def extract_slug_from_url(url: str) -> str:
         return m.group(1)
     raise ValueError(f"Cannot extract slug from URL: {url} (expected /detail/watch/<slug>)")
 
-def fetch_html(url: str, retries: int = 3) -> str:
+def fetch_html(url: str, retries: int = 5) -> str:
+    """Fetch HTML with aggressive retry for transient errors (502/timeout)."""
     last_err: Exception | None = None
     for attempt in range(retries):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Referer": BASE_SITE + "/"})
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=40) as resp:
                 return resp.read().decode("utf-8", errors="ignore")
         except urllib.error.HTTPError as e:
             last_err = e
@@ -74,7 +75,7 @@ def fetch_html(url: str, retries: int = 3) -> str:
             last_err = e
             if attempt < retries - 1:
                 wait = 2 * (attempt + 1)
-                print(f"[!] fetch err {e} -> retry {attempt+1}/{retries} in {wait}s", flush=True)
+                print(f"[!] fetch err {type(e).__name__} -> retry {attempt+1}/{retries} in {wait}s", flush=True)
                 time.sleep(wait)
                 continue
             raise
@@ -82,52 +83,70 @@ def fetch_html(url: str, retries: int = 3) -> str:
     raise last_err
 
 def fetch_episode_list(slug: str) -> tuple[list[dict], str, str]:
+    """Fetch episode list with fallback to per-ep page if URL missing."""
     now = time.time()
     if slug in _EP_CACHE:
         ts, cached = _EP_CACHE[slug]
         if now - ts < _EP_CACHE_TTL:
             return cached
+    
+    # Try /1 first (most common case)
     page_url = f"{BASE_SITE}/detail/watch/{slug}/1?lang=id-ID"
     print(f"[*] Fetch {page_url}", flush=True)
-    html = fetch_html(page_url)
+    
+    for attempt in range(2):
+        try:
+            html = fetch_html(page_url)
+            m = re.search(r"const episodeItemsRaw\s*=\s*(\[.*?\]);", html, re.S)
+            if m:
+                episodes = json.loads(m.group(1))
+                if episodes:
+                    result = (episodes, extract_title(html), extract_poster(html))
+                    _EP_CACHE[slug] = (time.time(), result)
+                    print(f"[*] {len(episodes)} episodes found", flush=True)
+                    return result
+        except Exception as e:
+            print(f"[!] Attempt {attempt+1} failed: {type(e).__name__}: {e}", flush=True)
+        
+        # Fallback 1: try without lang param
+        if attempt == 0:
+            page_url = f"{BASE_SITE}/detail/watch/{slug}/1"
+            print(f"[*] Retry {page_url}", flush=True)
+            continue
+        
+        # Fallback 2: try detail page (no ep number)
+        print(f"[*] Falling back to detail page", flush=True)
+        try:
+            html = fetch_html(f"{BASE_SITE}/detail/watch/{slug}?lang=id-ID")
+            m = re.search(r"const episodeItemsRaw\s*=\s*(\[.*?\]);", html, re.S)
+            if m:
+                episodes = json.loads(m.group(1))
+                if episodes:
+                    result = (episodes, extract_title(html), extract_poster(html))
+                    _EP_CACHE[slug] = (time.time(), result)
+                    print(f"[*] {len(episodes)} episodes found via detail page", flush=True)
+                    return result
+        except Exception as e2:
+            print(f"[!] Detail page fallback failed: {type(e2).__name__}: {e2}", flush=True)
+    
+    raise RuntimeError("Failed to fetch episode list after multiple attempts")
 
-    title = slug
-    m_title = re.search(r"<title>(.*?)</title>", html, re.S)
-    if m_title:
-        title = m_title.group(1).split(" - ")[0].split(" Episode")[0].strip()
 
-    poster = ""
-    m_post = re.search(r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"', html)
-    if m_post:
-        poster = m_post.group(1).strip()
-        if poster.startswith("/"):
-            poster = BASE_SITE + poster
+def extract_title(html: str) -> str:
+    m = re.search(r"<title>(.*?)</title>", html, re.S)
+    if m:
+        return m.group(1).split(" - ")[0].split(" Episode")[0].strip()
+    return "unknown-drama"
 
-    m = re.search(r"const episodeItemsRaw\s*=\s*(\[.*?\]);", html, re.S)
-    if not m:
-        html2 = fetch_html(f"{BASE_SITE}/detail/watch/{slug}?lang=id-ID")
-        m = re.search(r"const episodeItemsRaw\s*=\s*(\[.*?\]);", html2, re.S)
-        if not m:
-            raise RuntimeError("episodeItemsRaw not found. Page structure changed or slug invalid.")
-        html = html2
-        if not poster:
-            m_post = re.search(r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"', html)
-            if m_post:
-                poster = m_post.group(1).strip()
-                if poster.startswith("/"):
-                    poster = BASE_SITE + poster
-        if title == slug:
-            m_title = re.search(r"<title>(.*?)</title>", html, re.S)
-            if m_title:
-                title = m_title.group(1).split(" - ")[0].split(" Episode")[0].strip()
 
-    raw = m.group(1)
-    episodes = json.loads(raw)
-    if not episodes:
-        raise RuntimeError("No episodes in episodeItemsRaw")
-    result = (episodes, title, poster)  # ponytail: in-mem cache cukup; upgrade ke file cache jika mau persist antar restart
-    _EP_CACHE[slug] = (time.time(), result)
-    return result
+def extract_poster(html: str) -> str:
+    m = re.search(r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"', html)
+    if m:
+        p = m.group(1).strip()
+        if p.startswith("/"):
+            return BASE_SITE + p
+        return p
+    return ""
 
 def is_valid_mp4(path: str) -> bool:
     try:
@@ -158,6 +177,33 @@ def concat_mp4s(parts: list[str], out_path: str) -> bool:
         try: os.remove(lst)
         except: pass
 
+def _fetch_episode_url_fallback(slug: str, n: int) -> str | None:
+    """Fallback: fetch per-ep page to get URL if list shows empty."""
+    for url in (f"{BASE_SITE}/detail/watch/{slug}/{n}?lang=id-ID", f"{BASE_SITE}/detail/watch/{slug}/{n}"):
+        try:
+            html = fetch_html(url, retries=2)
+            m = re.search(r"const episodeItemsRaw\s*=\s*(\[.*?\]);", html, re.S)
+            if m:
+                arr = json.loads(m.group(1))
+                hit = next((x for x in arr if x.get("number") == n or x.get("route_episode_number") == n), None)
+                if hit:
+                    u = hit.get("play_url") or hit.get("direct_play_url")
+                    if u:
+                        return u.strip()
+        except Exception:
+            continue
+    return None
+
+
+def _pick_play_url(ep: dict) -> str:
+    """Pick best available URL from episode dict."""
+    for k in ("direct_play_url", "play_url", "schema_content_url", "video_url"):
+        v = ep.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
+
 def download_episode_hls(m3u8_url: str, dest: str, referer: str) -> bool:
     """Remux HLS to mp4 via ffmpeg. Returns True on success."""
     if is_valid_mp4(dest):
@@ -181,7 +227,6 @@ def download_episode_hls(m3u8_url: str, dest: str, referer: str) -> bool:
         "-c", "copy", "-bsf:a", "aac_adtstoasc",
         tmp
     ]
-    # ponytail: single ffmpeg copy is ceiling; upgrade to manual .ts concat + parallel fetch if CDN throttles
     print(f"  -> ffmpeg {os.path.basename(dest)} ...", flush=True)
     try:
         result = subprocess.run(cmd, timeout=FFMPEG_TIMEOUT, capture_output=True, text=True)
@@ -279,12 +324,26 @@ def main() -> None:
         return
 
     failures: list[int] = []
+    
+    def _resolve_m3u8(ep: dict) -> str | None:
+        u = _pick_play_url(ep)
+        if u:
+            return u
+        # Fallback: try per-ep page for missing URL (for transient 502/empty URL)
+        n = ep.get("route_episode_number") or ep.get("number")
+        fb = _fetch_episode_url_fallback(slug, int(n)) if n else None
+        if fb:
+            print(f"[fallback] Ep{n:02d} resolved via per-ep page", flush=True)
+        return fb
+    
     if args.workers == 1:
         for ep in targets:
             n = ep.get("route_episode_number") or ep.get("number")
-            m3u8 = ep.get("direct_play_url") or ep.get("play_url")
+            m3u8 = _resolve_m3u8(ep)
             if not m3u8:
-                print(f"[FAIL] Ep{n:02d} no play_url", flush=True); failures.append(n); continue
+                print(f"[FAIL] Ep{n:02d} no play_url available (server error)", flush=True)
+                failures.append(n)
+                continue
             dest = os.path.join(out_dir, f"Ep{n:02d}.mp4")
             referer = ep.get("watch_url") or f"{BASE_SITE}/detail/watch/{slug}/{n}?lang=id-ID"
             if not download_episode_hls(m3u8, dest, referer):
@@ -293,7 +352,7 @@ def main() -> None:
     else:
         def _one(ep: dict) -> tuple[int, bool]:
             n = ep.get("route_episode_number") or ep.get("number")
-            m3u8 = ep.get("direct_play_url") or ep.get("play_url")
+            m3u8 = _resolve_m3u8(ep)
             if not m3u8:
                 print(f"[FAIL] Ep{n:02d} no play_url", flush=True)
                 return n, False
