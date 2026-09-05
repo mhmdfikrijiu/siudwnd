@@ -195,6 +195,37 @@ def _fetch_episode_url_fallback(slug: str, n: int) -> str | None:
     return None
 
 
+def _fetch_fresh_url_from_page(slug: str, n: int) -> str:
+    for attempt in range(3):
+        try:
+            url = f"{BASE_SITE}/detail/watch/{slug}/{n}?lang=id-ID"
+            html = fetch_html(url, retries=2)
+            m = re.search(r"const episodeItemsRaw\s*=\s*(\[.*?\]);", html, re.S)
+            if m:
+                arr = json.loads(m.group(1))
+                hit = next((x for x in arr if x.get("number") == n or x.get("route_episode_number") == n), None)
+                if hit:
+                    pu = hit.get("play_url") or hit.get("direct_play_url")
+                    if isinstance(pu, str) and pu.strip():
+                        return pu.strip()
+        except Exception:
+            pass
+        time.sleep(0.5)
+    try:
+        url = f"{BASE_SITE}/detail/watch/{slug}/{n}"
+        html = fetch_html(url, retries=2)
+        m = re.search(r"const episodeItemsRaw\s*=\s*(\[.*?\]);", html, re.S)
+        if m:
+            arr = json.loads(m.group(1))
+            hit = next((x for x in arr if x.get("number") == n or x.get("route_episode_number") == n), None)
+            if hit:
+                pu = hit.get("play_url") or hit.get("direct_play_url")
+                if isinstance(pu, str) and pu.strip():
+                    return pu.strip()
+    except Exception:
+        pass
+    return ""
+
 def _pick_play_url(ep: dict) -> str:
     """Pick best available URL from episode dict."""
     for k in ("direct_play_url", "play_url", "schema_content_url", "video_url"):

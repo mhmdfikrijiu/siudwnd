@@ -156,14 +156,28 @@ def ensure_mp4(slug: str, n: int, episodes: list[dict] | None = None) -> pathlib
     ep = next((e for e in episodes if (e.get("route_episode_number") == n or e.get("number") == n)), None)
     if not ep:
         raise FileNotFoundError(f"Episode {n} tidak ada di {slug}")
-    m3u8 = ep.get("direct_play_url") or ep.get("play_url")
+    m3u8 = (ep.get("direct_play_url") or ep.get("play_url") or "").strip()
+    if m3u8:
+        referer = ep.get("watch_url") or f"{nd.BASE_SITE}/detail/watch/{slug}/{n}?lang=id-ID"
+        ok = nd.download_episode_hls(m3u8, str(dest), referer)
+        if ok and nd.is_valid_mp4(str(dest)):
+            _touch(dest)
+            return dest
+        print(f"[retry] Ep{n:02d} cached URL 4XX/failed, refresh fresh URL...", flush=True)
+    if hasattr(nd, "_fetch_fresh_url_from_page"):
+        try:
+            fb = nd._fetch_fresh_url_from_page(slug, n)
+            if fb:
+                referer = f"{nd.BASE_SITE}/detail/watch/{slug}/{n}?lang=id-ID"
+                ok = nd.download_episode_hls(fb, str(dest), referer)
+                if ok and nd.is_valid_mp4(str(dest)):
+                    _touch(dest)
+                    return dest
+        except Exception as e:
+            print(f"[warn] fresh fetch Ep{n:02d}: {e}", flush=True)
     if not m3u8:
         raise RuntimeError(f"Episode {n} tidak punya play URL")
-    referer = ep.get("watch_url") or f"{nd.BASE_SITE}/detail/watch/{slug}/{n}?lang=id-ID"
-    ok = nd.download_episode_hls(m3u8, str(dest), referer)
-    if not ok or not nd.is_valid_mp4(str(dest)):
-        raise RuntimeError(f"Gagal download Ep{n:02d}")
-    return dest
+    raise RuntimeError(f"Gagal download Ep{n:02d}")
 
 
 def _job_set(job_id: str, **kw):
