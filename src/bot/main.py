@@ -21,12 +21,14 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 class DramaSelection:
     slug: str
     title: str
+    poster: str
     episodes: list[dict]
 
 
 def episode_keyboard(episodes: list[dict]) -> InlineKeyboardMarkup:
     buttons = [InlineKeyboardButton(f"Ep {item['number']:02d}", callback_data=f"ep:{item['number']}") for item in episodes]
     rows = [buttons[index : index + 4] for index in range(0, len(buttons), 4)]
+    rows.append([InlineKeyboardButton("📤 Kirim semua (per episode)", callback_data="all")])
     rows.append([InlineKeyboardButton("🎬 FULL — gabung semua episode", callback_data="full")])
     return InlineKeyboardMarkup(rows)
 
@@ -42,8 +44,16 @@ async def receive_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     text = (update.effective_message.text or "").strip()
     status = await update.effective_message.reply_text("🔎 Mengecek daftar episode…")
     try:
-        slug, title, episodes = await asyncio.to_thread(resolve, text)
-        context.user_data["drama"] = DramaSelection(slug, title, episodes)
+        slug, title, poster, episodes = await asyncio.to_thread(resolve, text)
+        context.user_data["drama"] = DramaSelection(slug, title, poster, episodes)
+        if poster:
+            try:
+                await update.effective_message.reply_photo(
+                    photo=poster,
+                    caption=f"🎬 {title}\n📚 {len(episodes)} episode tersedia",
+                )
+            except Exception as error:
+                LOG.info("poster unavailable: %s", error)
         await status.edit_text(
             f"🎬 {title}\n\n"
             f"📚 {len(episodes)} episode tersedia\n"
@@ -64,7 +74,8 @@ async def send_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await query.edit_message_text("Sesi sudah berakhir. Kirim link drama lagi.")
         return
     is_full = query.data == "full"
-    episode = None if is_full else int(query.data.split(":", 1)[1])
+    is_all = query.data == "all"
+    episode = None if is_full or is_all else int(query.data.split(":", 1)[1])
     settings: TelegramSettings = context.application.bot_data["settings"]
     semaphore: asyncio.Semaphore = context.application.bot_data["download_semaphore"]
     event_loop = asyncio.get_running_loop()
@@ -101,6 +112,62 @@ async def send_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         future = asyncio.run_coroutine_threadsafe(query.edit_message_text(progress_text()), event_loop)
         future.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
 
+    if is_all:
+        await query.edit_message_text(
+            f"📤 Kirim Semua — per episode\n\n🎬 {selection.title}\n📚 0/{len(selection.episodes)} terkirim\n"
+            "Episode akan dikirim satu per satu segera setelah selesai diunduh."
+        )
+        sent: list[int] = []
+        failed: list[int] = []
+        try:
+            async with semaphore:
+                for index, item in enumerate(selection.episodes, start=1):
+                    number = item["number"]
+                    path = None
+                    try:
+                        await query.edit_message_text(
+                            f"📥 Mengunduh Episode {number:02d}\n\n🎬 {selection.title}\n"
+                            f"📤 Terkirim: {len(sent)}/{len(selection.episodes)}\n"
+                            f"⏳ Antrean: episode {index}/{len(selection.episodes)}"
+                        )
+                        path = await asyncio.to_thread(download_one, selection.slug, number, settings.work_dir)
+                        size = path.stat().st_size
+                        if size > settings.max_upload_bytes:
+                            raise DownloadError(
+                                f"Ep {number:02d} ({size / 1024 / 1024:.1f} MB) melewati batas upload bot."
+                            )
+                        await query.edit_message_text(
+                            f"📤 Mengirim Episode {number:02d}\n\n🎬 {selection.title}\n"
+                            f"📦 {size / 1024 / 1024:.1f} MB"
+                        )
+                        with path.open("rb") as file_handle:
+                            await query.message.reply_document(
+                                document=file_handle,
+                                filename=path.name,
+                                caption=f"✅ {selection.title}\nEpisode {number:02d} · {size / 1024 / 1024:.1f} MB",
+                            )
+                        sent.append(number)
+                    except TimedOut:
+                        # Do not resend automatically: Telegram may already have the file.
+                        sent.append(number)
+                        LOG.warning("Telegram timed out while sending episode %s", number)
+                    except Exception as error:
+                        failed.append(number)
+                        LOG.warning("episode %s skipped in send-all: %s", number, error)
+                    finally:
+                        if path:
+                            await asyncio.to_thread(remove_job_file, path)
+            sent_text = ", ".join(f"Ep {number:02d}" for number in sent) or "tidak ada"
+            failed_text = f"\n⚠️ Gagal: {', '.join(f'Ep {number:02d}' for number in failed)}" if failed else ""
+            await query.edit_message_text(
+                f"✅ Kirim Semua selesai\n\n🎬 {selection.title}\n"
+                f"📤 Terkirim ({len(sent)}/{len(selection.episodes)}): {sent_text}{failed_text}\n\n"
+                "File sementara di server telah dibersihkan."
+            )
+        except Exception as error:
+            LOG.exception("send-all failed")
+            await query.edit_message_text(f"⚠️ Kirim semua berhenti: {error}")
+        return
     if is_full:
         await query.edit_message_text(progress_text())
     else:
@@ -186,7 +253,7 @@ def main() -> None:
     application.bot_data["settings"] = settings
     application.bot_data["download_semaphore"] = asyncio.Semaphore(settings.max_concurrent_downloads)
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(send_download, pattern=r"^(ep:\d+|full)$"))
+    application.add_handler(CallbackQueryHandler(send_download, pattern=r"^(ep:\d+|all|full)$"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_url))
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 

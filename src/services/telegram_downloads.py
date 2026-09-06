@@ -30,9 +30,9 @@ def validate_source_url(url: str) -> str:
     return slug
 
 
-def resolve(url: str) -> tuple[str, str, list[dict]]:
+def resolve(url: str) -> tuple[str, str, str, list[dict]]:
     slug = validate_source_url(url)
-    episodes, title, _poster = downloader.fetch_episode_list(slug)
+    episodes, title, poster = downloader.fetch_episode_list(slug)
     clean = [
         {"number": item.get("route_episode_number") or item.get("number"), "title": item.get("title") or "Episode"}
         for item in episodes
@@ -40,7 +40,7 @@ def resolve(url: str) -> tuple[str, str, list[dict]]:
     clean = [item for item in clean if isinstance(item["number"], int)]
     if not clean:
         raise DownloadError("Episode tidak ditemukan pada link tersebut.")
-    return slug, title or slug, sorted(clean, key=lambda item: item["number"])
+    return slug, title or slug, poster or "", sorted(clean, key=lambda item: item["number"])
 
 
 def download_one(slug: str, episode: int, work_dir: Path) -> Path:
