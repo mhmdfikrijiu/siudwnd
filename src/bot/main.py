@@ -43,8 +43,6 @@ def job_key(update: Update) -> tuple[int, int]:
 
 
 def episode_keyboard(episodes: list[dict], *, full_only: bool = False) -> InlineKeyboardMarkup:
-    if full_only:
-        return InlineKeyboardMarkup([[InlineKeyboardButton("🎬 FULL — gabung semua episode", callback_data="full")]])
     buttons = [InlineKeyboardButton(f"Ep {item['number']:02d}", callback_data=f"ep:{item['number']}") for item in episodes]
     rows = [buttons[index : index + 4] for index in range(0, len(buttons), 4)]
     rows.append([InlineKeyboardButton("📤 Download & kirim semua (satu per satu)", callback_data="all")])
@@ -56,8 +54,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     full_only = context.application.bot_data["full_only"]
     if full_only:
         await update.effective_message.reply_text(
-            "🎬 Narto FULL Downloader\n\nKirim link drama dari narto-drama.com. Bot ini hanya membuat satu video FULL "
-            "dan dapat mengirim file besar hingga 1,9 GB."
+            "🎬 Narto FULL Downloader\n\nKirim link drama dari narto-drama.com. Pilih episode satuan, "
+            "kirim semua episode, atau buat satu video FULL hingga 1,9 GB."
         )
         return
     await update.effective_message.reply_text(
@@ -87,7 +85,7 @@ async def receive_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         context.user_data["drama"] = DramaSelection(slug, title, poster, episodes)
         full_only = context.application.bot_data["full_only"]
         detail = (
-            "🎬 Tekan tombol FULL untuk menggabungkan seluruh episode menjadi satu MP4 besar."
+            "📥 Pilih satu episode, kirim semua satu per satu, atau tekan FULL untuk menggabungkan seluruh episode menjadi satu MP4 besar."
             if full_only
             else (
                 "📥 Pilih satu episode, atau pilih ‘Download & kirim semua’ untuk memproses seluruh episode "
@@ -155,9 +153,6 @@ async def send_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     is_full = query.data == "full"
     is_all = query.data == "all"
-    if context.application.bot_data["full_only"] and not is_full:
-        await edit_status(query, "Bot ini hanya menangani tombol FULL. Kirim link lagi bila sesi sudah berakhir.")
-        return
     episode = None if is_full or is_all else int(query.data.split(":", 1)[1])
     settings: TelegramSettings = context.application.bot_data["settings"]
     semaphore: asyncio.Semaphore = context.application.bot_data["download_semaphore"]
@@ -445,7 +440,7 @@ def run_bot(*, full_only: bool = False) -> None:
     application.bot_data["active_jobs"] = {}
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("stop", stop))
-    application.add_handler(CallbackQueryHandler(send_download, pattern=r"^full$" if full_only else r"^(ep:\d+|all)$"))
+    application.add_handler(CallbackQueryHandler(send_download, pattern=r"^(ep:\d+|all|full)$"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_url))
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
