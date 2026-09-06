@@ -1,16 +1,15 @@
 # Optional override: run with
-# docker compose -f docker-compose.yml -f docker-compose.local-api.yml up --build
+# docker compose -f docker-compose.yml -f docker-compose.local-api.yml pull
+# docker compose -f docker-compose.yml -f docker-compose.local-api.yml up -d
 services:
   telegram-api:
-    build:
-      context: .
-      dockerfile: Dockerfile.telegram-api
-    command:
-      - --api-id=${TELEGRAM_API_ID:?Set TELEGRAM_API_ID in .env}
-      - --api-hash=${TELEGRAM_API_HASH:?Set TELEGRAM_API_HASH in .env}
-      - --local
-      - --dir=/var/lib/telegram-bot-api
-      - --http-port=8081
+    # Prebuilt image for Telegram's open-source Bot API server. This avoids
+    # compiling TDLib on the VPS; the image itself is maintained by aiogram.
+    image: aiogram/telegram-bot-api:latest
+    environment:
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:?Set TELEGRAM_API_ID in .env}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:?Set TELEGRAM_API_HASH in .env}
+      TELEGRAM_LOCAL: "1"
     expose:
       - "8081"
     volumes:

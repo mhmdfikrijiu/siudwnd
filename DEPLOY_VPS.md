@@ -21,9 +21,14 @@ Isi `TELEGRAM_BOT_TOKEN`, `TELEGRAM_API_ID`, dan `TELEGRAM_API_HASH` yang masih 
 ## Menjalankan stack terpisah
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.local-api.yml up --build -d
+set -a; . ./.env; set +a
+curl --fail-with-body "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/logOut"
+docker compose -f docker-compose.yml -f docker-compose.local-api.yml pull
+docker compose -f docker-compose.yml -f docker-compose.local-api.yml up -d
 docker compose -f docker-compose.yml -f docker-compose.local-api.yml ps
 ```
+
+`logOut` perlu dilakukan satu kali sebelum bot pindah dari API cloud ke Local Bot API. Jangan jalankan dua instance bot dengan token yang sama.
 
 Service yang berjalan:
 
@@ -39,7 +44,7 @@ curl http://127.0.0.1:5000/health
 docker system df
 ```
 
-Untuk deploy perubahan baru, jalankan kembali perintah `up --build -d`. Untuk rollback aplikasi ke image terakhir yang masih tersimpan, gunakan `docker compose ... down` lalu jalankan tag/image sebelumnya sesuai kebijakan rilis Anda; jangan hapus volume `narto_cache`, `telegram_jobs`, atau `telegram_api_data` kecuali memang ingin menghapus seluruh cache/data Bot API.
+Untuk deploy perubahan baru, jalankan kembali `docker compose ... pull` lalu `docker compose ... up -d`. Untuk rollback aplikasi ke image terakhir yang masih tersimpan, gunakan `docker compose ... down` lalu jalankan tag/image sebelumnya sesuai kebijakan rilis Anda; jangan hapus volume `narto_cache`, `telegram_jobs`, atau `telegram_api_data` kecuali memang ingin menghapus seluruh cache/data Bot API.
 
 ## Batas storage
 
