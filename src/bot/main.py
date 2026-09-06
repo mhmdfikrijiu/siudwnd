@@ -160,23 +160,47 @@ async def send_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if is_all:
         await edit_status(query,
             f"📤 Kirim Semua — per episode\n\n🎬 {selection.title}\n📚 0/{len(selection.episodes)} terkirim\n"
-            "Episode akan dikirim satu per satu segera setelah selesai diunduh."
+            "Episode dikirim berurutan. Bot menyiapkan maksimal dua episode berikutnya di latar belakang."
         )
         sent: list[int] = []
         failed: list[int] = []
+        prefetch_limit = min(2, settings.max_concurrent_downloads)
+        pending_downloads: dict[int, asyncio.Task] = {}
+        next_episode_index = 0
+
+        def prefetch_more() -> None:
+            nonlocal next_episode_index
+            while len(pending_downloads) < prefetch_limit and next_episode_index < len(selection.episodes):
+                item = selection.episodes[next_episode_index]
+                next_episode_index += 1
+                number = item["number"]
+                pending_downloads[number] = asyncio.create_task(
+                    asyncio.to_thread(download_one, selection.slug, number, settings.work_dir),
+                    name=f"download-episode-{number}",
+                )
+
         try:
             async with semaphore:
+                prefetch_more()
                 for index, item in enumerate(selection.episodes, start=1):
                     number = item["number"]
                     path = None
                     try:
                         await edit_status(query,
-                            f"📥 Mengunduh Episode {number:02d}\n\n🎬 {selection.title}\n"
+                            f"📥 Menyiapkan Episode {number:02d}\n\n🎬 {selection.title}\n"
                             f"📤 Terkirim: {len(sent)}/{len(selection.episodes)}\n"
-                            f"⏳ Antrean: episode {index}/{len(selection.episodes)}"
+                            f"⚡ Prefetch: hingga {prefetch_limit} episode berikutnya"
                         )
-                        path = await asyncio.to_thread(download_one, selection.slug, number, settings.work_dir)
+                        download_started = time.monotonic()
+                        path = await pending_downloads.pop(number)
+                        prefetch_more()
                         size = path.stat().st_size
+                        LOG.info(
+                            "send-all download ready: %s (%.1f MB) in %.1fs",
+                            path.name,
+                            size / 1024 / 1024,
+                            time.monotonic() - download_started,
+                        )
                         if size > settings.max_upload_bytes:
                             raise DownloadError(
                                 f"Ep {number:02d} ({size / 1024 / 1024:.1f} MB) melewati batas upload bot."
@@ -185,17 +209,30 @@ async def send_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                             f"📤 Mengirim Episode {number:02d}\n\n🎬 {selection.title}\n"
                             f"📦 {size / 1024 / 1024:.1f} MB"
                         )
-                        with path.open("rb") as file_handle:
-                            await query.message.reply_document(
-                                document=file_handle,
-                                filename=path.name,
-                                caption=f"✅ {selection.title}\nEpisode {number:02d} · {size / 1024 / 1024:.1f} MB",
+                        upload_started = time.monotonic()
+                        LOG.info("send-all starting Telegram upload: %s (%.1f MB)", path.name, size / 1024 / 1024)
+                        try:
+                            with path.open("rb") as file_handle:
+                                await query.message.reply_document(
+                                    document=file_handle,
+                                    filename=path.name,
+                                    caption=f"✅ {selection.title}\nEpisode {number:02d} · {size / 1024 / 1024:.1f} MB",
+                                )
+                        except TimedOut:
+                            # Never retry automatically: the file may already be in chat.
+                            LOG.warning(
+                                "send-all upload response timed out for %s after %.1fs",
+                                path.name,
+                                time.monotonic() - upload_started,
                             )
+                            failed.append(number)
+                            continue
+                        LOG.info(
+                            "send-all Telegram upload confirmed: %s in %.1fs",
+                            path.name,
+                            time.monotonic() - upload_started,
+                        )
                         sent.append(number)
-                    except TimedOut:
-                        # Do not resend automatically: Telegram may already have the file.
-                        sent.append(number)
-                        LOG.warning("Telegram timed out while sending episode %s", number)
                     except Exception as error:
                         failed.append(number)
                         LOG.warning("episode %s skipped in send-all: %s", number, error)
@@ -212,6 +249,15 @@ async def send_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         except Exception as error:
             LOG.exception("send-all failed")
             await edit_status(query, f"⚠️ Kirim semua berhenti: {error}")
+        finally:
+            # On cancellation/failure, wait for prefetches to finish and remove
+            # their temporary files so they cannot accumulate on the VPS.
+            for task in pending_downloads.values():
+                try:
+                    leftover = await task
+                    await asyncio.to_thread(remove_job_file, leftover)
+                except Exception:
+                    pass
         return
     if is_full:
         await edit_status(query, progress_text())
