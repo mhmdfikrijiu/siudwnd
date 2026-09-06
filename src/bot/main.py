@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import TimedOut
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.request import HTTPXRequest
 
 from src.core.config import TelegramSettings
 from src.services.telegram_downloads import DownloadError, download_full, download_one, purge_work_dir, remove_job_file, resolve
@@ -278,28 +279,51 @@ async def post_init(application: Application) -> None:
     removed = await asyncio.to_thread(purge_work_dir, settings.work_dir, settings.job_ttl_seconds)
     if removed:
         LOG.info("removed %d abandoned Telegram job(s)", removed)
-    application.create_task(_periodic_job_cleanup(application), name="telegram-job-cleanup")
+    if application.job_queue is None:
+        raise RuntimeError("Telegram job queue tidak tersedia. Install dependensi dari requirements.txt.")
+    application.job_queue.run_repeating(
+        _periodic_job_cleanup,
+        interval=30 * 60,
+        first=30 * 60,
+        name="telegram-job-cleanup",
+    )
 
 
-async def _periodic_job_cleanup(application: Application) -> None:
+async def _periodic_job_cleanup(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Prevent abandoned download folders from surviving a long-running bot."""
-    settings: TelegramSettings = application.bot_data["settings"]
-    while True:
-        await asyncio.sleep(30 * 60)
-        removed = await asyncio.to_thread(purge_work_dir, settings.work_dir, settings.job_ttl_seconds)
-        if removed:
-            LOG.info("periodic cleanup removed %d Telegram job(s)", removed)
+    settings: TelegramSettings = context.application.bot_data["settings"]
+    removed = await asyncio.to_thread(purge_work_dir, settings.work_dir, settings.job_ttl_seconds)
+    if removed:
+        LOG.info("periodic cleanup removed %d Telegram job(s)", removed)
 
 
 def run_bot(*, full_only: bool = False) -> None:
     settings = TelegramSettings.from_env("TELEGRAM_FULL_BOT_TOKEN" if full_only else "TELEGRAM_BOT_TOKEN")
+    # Keep uploads independent from long polling. HTTP/1.1 is intentional here:
+    # it is the most reliable protocol for large multipart uploads through VPS
+    # networks and Telegram's Bot API edge.
+    api_request = HTTPXRequest(
+        connection_pool_size=8,
+        connect_timeout=30,
+        read_timeout=600,
+        write_timeout=600,
+        media_write_timeout=600,
+        pool_timeout=30,
+        http_version="1.1",
+    )
+    updates_request = HTTPXRequest(
+        connection_pool_size=2,
+        connect_timeout=30,
+        read_timeout=60,
+        write_timeout=30,
+        pool_timeout=30,
+        http_version="1.1",
+    )
     builder = (
         Application.builder()
         .token(settings.token)
-        .connect_timeout(30)
-        .write_timeout(600)
-        .read_timeout(600)
-        .pool_timeout(30)
+        .request(api_request)
+        .get_updates_request(updates_request)
         .post_init(post_init)
     )
     if settings.api_base_url:
