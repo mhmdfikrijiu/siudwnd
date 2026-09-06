@@ -55,14 +55,6 @@ async def receive_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     try:
         slug, title, poster, episodes = await asyncio.to_thread(resolve, text)
         context.user_data["drama"] = DramaSelection(slug, title, poster, episodes)
-        if poster:
-            try:
-                await update.effective_message.reply_photo(
-                    photo=poster,
-                    caption=f"🎬 {title}\n📚 {len(episodes)} episode tersedia",
-                )
-            except Exception as error:
-                LOG.info("poster unavailable: %s", error)
         full_only = context.application.bot_data["full_only"]
         detail = (
             "🎬 Tekan tombol FULL untuk menggabungkan seluruh episode menjadi satu MP4 besar."
@@ -72,16 +64,36 @@ async def receive_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 "berurutan: download → kirim → hapus file → lanjut episode berikutnya."
             )
         )
-        await status.edit_text(
+        card_text = (
             f"🎬 {title}\n\n"
             f"📚 {len(episodes)} episode tersedia\n"
             f"{detail}\n\n"
-            "ℹ️ File dibersihkan otomatis setelah berhasil dikirim.",
-            reply_markup=episode_keyboard(episodes, full_only=full_only),
+            "ℹ️ File dibersihkan otomatis setelah berhasil dikirim."
         )
+        keyboard = episode_keyboard(episodes, full_only=full_only)
+        if poster:
+            try:
+                await update.effective_message.reply_photo(
+                    photo=poster,
+                    caption=card_text,
+                    reply_markup=keyboard,
+                )
+                await status.delete()
+                return
+            except Exception as error:
+                LOG.info("poster unavailable: %s", error)
+        await status.edit_text(card_text, reply_markup=keyboard)
     except Exception as error:
         LOG.info("resolve failed: %s", error)
         await status.edit_text(f"⚠️ {error}")
+
+
+async def edit_status(query, text: str) -> None:
+    """Update either a text card or a cover-photo card in place."""
+    if query.message and query.message.photo:
+        await query.edit_message_caption(caption=text)
+    else:
+        await query.edit_message_text(text)
 
 
 async def send_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -89,12 +101,12 @@ async def send_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await query.answer()
     selection: DramaSelection | None = context.user_data.get("drama")
     if not selection:
-        await query.edit_message_text("Sesi sudah berakhir. Kirim link drama lagi.")
+        await edit_status(query, "Sesi sudah berakhir. Kirim link drama lagi.")
         return
     is_full = query.data == "full"
     is_all = query.data == "all"
     if context.application.bot_data["full_only"] and not is_full:
-        await query.edit_message_text("Bot ini hanya menangani tombol FULL. Kirim link lagi bila sesi sudah berakhir.")
+        await edit_status(query, "Bot ini hanya menangani tombol FULL. Kirim link lagi bila sesi sudah berakhir.")
         return
     episode = None if is_full or is_all else int(query.data.split(":", 1)[1])
     settings: TelegramSettings = context.application.bot_data["settings"]
@@ -130,11 +142,11 @@ async def send_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             progress["retry"].add(number)
         elif stage == "concat":
             progress["stage"] = "concat"
-        future = asyncio.run_coroutine_threadsafe(query.edit_message_text(progress_text()), event_loop)
+        future = asyncio.run_coroutine_threadsafe(edit_status(query, progress_text()), event_loop)
         future.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
 
     if is_all:
-        await query.edit_message_text(
+        await edit_status(query,
             f"📤 Kirim Semua — per episode\n\n🎬 {selection.title}\n📚 0/{len(selection.episodes)} terkirim\n"
             "Episode akan dikirim satu per satu segera setelah selesai diunduh."
         )
@@ -146,7 +158,7 @@ async def send_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     number = item["number"]
                     path = None
                     try:
-                        await query.edit_message_text(
+                        await edit_status(query,
                             f"📥 Mengunduh Episode {number:02d}\n\n🎬 {selection.title}\n"
                             f"📤 Terkirim: {len(sent)}/{len(selection.episodes)}\n"
                             f"⏳ Antrean: episode {index}/{len(selection.episodes)}"
@@ -157,7 +169,7 @@ async def send_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                             raise DownloadError(
                                 f"Ep {number:02d} ({size / 1024 / 1024:.1f} MB) melewati batas upload bot."
                             )
-                        await query.edit_message_text(
+                        await edit_status(query,
                             f"📤 Mengirim Episode {number:02d}\n\n🎬 {selection.title}\n"
                             f"📦 {size / 1024 / 1024:.1f} MB"
                         )
@@ -180,19 +192,19 @@ async def send_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                             await asyncio.to_thread(remove_job_file, path)
             sent_text = ", ".join(f"Ep {number:02d}" for number in sent) or "tidak ada"
             failed_text = f"\n⚠️ Gagal: {', '.join(f'Ep {number:02d}' for number in failed)}" if failed else ""
-            await query.edit_message_text(
+            await edit_status(query,
                 f"✅ Kirim Semua selesai\n\n🎬 {selection.title}\n"
                 f"📤 Terkirim ({len(sent)}/{len(selection.episodes)}): {sent_text}{failed_text}\n\n"
                 "File sementara di server telah dibersihkan."
             )
         except Exception as error:
             LOG.exception("send-all failed")
-            await query.edit_message_text(f"⚠️ Kirim semua berhenti: {error}")
+            await edit_status(query, f"⚠️ Kirim semua berhenti: {error}")
         return
     if is_full:
-        await query.edit_message_text(progress_text())
+        await edit_status(query, progress_text())
     else:
-        await query.edit_message_text(f"⏳ Mengunduh\n\n🎬 {selection.title}\n📺 Episode {episode:02d}")
+        await edit_status(query, f"⏳ Mengunduh\n\n🎬 {selection.title}\n📺 Episode {episode:02d}")
     path = None
     try:
         async with semaphore:
@@ -208,7 +220,7 @@ async def send_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         if size > settings.max_upload_bytes:
             raise DownloadError(f"File {size / 1024 / 1024:.1f} MB melebihi batas bot ({settings.max_upload_bytes / 1024 / 1024:.0f} MB).")
         if is_full:
-            await query.edit_message_text(
+            await edit_status(query,
                 f"📤 Mengunggah FULL ke Telegram\n\n🎬 {selection.title}\n"
                 f"📦 {size / 1024 / 1024:.1f} MB\n⏳ Jangan tekan tombol lagi sampai file muncul."
             )
@@ -219,18 +231,18 @@ async def send_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 caption=(f"✅ {selection.title}\nFULL · {len(selection.episodes)} episode · {size / 1024 / 1024:.1f} MB"
                          if is_full else f"✅ {selection.title}\nEpisode {episode:02d} · {size / 1024 / 1024:.1f} MB"),
             )
-        await query.edit_message_text("✅ File terkirim dan salinan sementara di server sudah dibersihkan.")
+        await edit_status(query, "✅ File terkirim dan salinan sementara di server sudah dibersihkan.")
     except TimedOut:
         # Telegram may accept and deliver a large upload before its API response
         # reaches us. Treat this as an uncertain delivery, never as a hard failure.
         LOG.warning("Telegram timed out after upload for %s", path.name if path else "unknown file")
-        await query.edit_message_text(
+        await edit_status(query,
             "⚠️ Respons Telegram terlambat. Jika file sudah muncul di chat, pengiriman berhasil—jangan unduh ulang. "
             "Salinan sementara di server tetap dibersihkan."
         )
     except Exception as error:
         LOG.exception("episode delivery failed")
-        await query.edit_message_text(f"⚠️ Gagal: {error}")
+        await edit_status(query, f"⚠️ Gagal: {error}")
     finally:
         if path:
             await asyncio.to_thread(remove_job_file, path)
