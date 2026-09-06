@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -94,6 +95,16 @@ async def edit_status(query, text: str) -> None:
         await query.edit_message_caption(caption=text)
     else:
         await query.edit_message_text(text)
+
+
+async def safe_edit_status(query, text: str) -> None:
+    """Status text must never make a completed file delivery look failed."""
+    try:
+        await edit_status(query, text)
+    except TimedOut:
+        LOG.warning("Telegram timed out while updating the status card")
+    except Exception as error:
+        LOG.warning("could not update the status card: %s", error)
 
 
 async def send_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -206,6 +217,7 @@ async def send_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     else:
         await edit_status(query, f"⏳ Mengunduh\n\n🎬 {selection.title}\n📺 Episode {episode:02d}")
     path = None
+    download_started = time.monotonic()
     try:
         async with semaphore:
             if is_full:
@@ -217,6 +229,12 @@ async def send_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             else:
                 path = await asyncio.to_thread(download_one, selection.slug, episode, settings.work_dir)
         size = path.stat().st_size
+        LOG.info(
+            "download ready: %s (%.1f MB) in %.1fs",
+            path.name,
+            size / 1024 / 1024,
+            time.monotonic() - download_started,
+        )
         if size > settings.max_upload_bytes:
             raise DownloadError(f"File {size / 1024 / 1024:.1f} MB melebihi batas bot ({settings.max_upload_bytes / 1024 / 1024:.0f} MB).")
         if is_full:
@@ -224,22 +242,28 @@ async def send_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 f"📤 Mengunggah FULL ke Telegram\n\n🎬 {selection.title}\n"
                 f"📦 {size / 1024 / 1024:.1f} MB\n⏳ Jangan tekan tombol lagi sampai file muncul."
             )
-        with path.open("rb") as file_handle:
-            await query.message.reply_document(
-                document=file_handle,
-                filename=path.name,
-                caption=(f"✅ {selection.title}\nFULL · {len(selection.episodes)} episode · {size / 1024 / 1024:.1f} MB"
-                         if is_full else f"✅ {selection.title}\nEpisode {episode:02d} · {size / 1024 / 1024:.1f} MB"),
+        upload_started = time.monotonic()
+        LOG.info("starting Telegram upload: %s (%.1f MB)", path.name, size / 1024 / 1024)
+        try:
+            with path.open("rb") as file_handle:
+                await query.message.reply_document(
+                    document=file_handle,
+                    filename=path.name,
+                    caption=(f"✅ {selection.title}\nFULL · {len(selection.episodes)} episode · {size / 1024 / 1024:.1f} MB"
+                             if is_full else f"✅ {selection.title}\nEpisode {episode:02d} · {size / 1024 / 1024:.1f} MB"),
+                )
+        except TimedOut:
+            # Telegram can finish a delivery before its API response reaches us.
+            # Never retry automatically: that could create a duplicate document.
+            LOG.warning("Telegram upload response timed out for %s after %.1fs", path.name, time.monotonic() - upload_started)
+            await safe_edit_status(
+                query,
+                "⏱ Telegram belum mengonfirmasi pengiriman. Jika file sudah muncul, proses berhasil. "
+                "Jika belum muncul dalam 1 menit, tekan tombol episode sekali lagi.",
             )
-        await edit_status(query, "✅ File terkirim dan salinan sementara di server sudah dibersihkan.")
-    except TimedOut:
-        # Telegram may accept and deliver a large upload before its API response
-        # reaches us. Treat this as an uncertain delivery, never as a hard failure.
-        LOG.warning("Telegram timed out after upload for %s", path.name if path else "unknown file")
-        await edit_status(query,
-            "⚠️ Respons Telegram terlambat. Jika file sudah muncul di chat, pengiriman berhasil—jangan unduh ulang. "
-            "Salinan sementara di server tetap dibersihkan."
-        )
+            return
+        LOG.info("Telegram upload confirmed: %s in %.1fs", path.name, time.monotonic() - upload_started)
+        await safe_edit_status(query, "✅ File terkirim dan salinan sementara di server sudah dibersihkan.")
     except Exception as error:
         LOG.exception("episode delivery failed")
         await edit_status(query, f"⚠️ Gagal: {error}")
