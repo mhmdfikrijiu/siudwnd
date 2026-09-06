@@ -1,6 +1,6 @@
 # Optional override: run with
 # docker compose -f docker-compose.yml -f docker-compose.local-api.yml pull
-# docker compose -f docker-compose.yml -f docker-compose.local-api.yml up -d
+# docker compose -f docker-compose.yml -f docker-compose.local-api.yml up --build -d
 services:
   telegram-api:
     # Prebuilt image for Telegram's open-source Bot API server. This avoids
@@ -17,11 +17,30 @@ services:
     restart: unless-stopped
 
   telegram-bot:
+    environment:
+      # Episode satuan dikirim langsung melalui Cloud Bot API (maksimum 50 MB).
+      TELEGRAM_API_BASE_URL: ""
+      TELEGRAM_MAX_UPLOAD_MB: 49
+
+  telegram-full-bot:
+    build: .
+    command: ["python", "-m", "src.bot.full_main"]
     depends_on:
       - telegram-api
     environment:
       TELEGRAM_API_BASE_URL: http://telegram-api:8081
       TELEGRAM_MAX_UPLOAD_MB: 1900
+      TELEGRAM_MAX_CONCURRENT_DOWNLOADS: ${TELEGRAM_MAX_CONCURRENT_DOWNLOADS:-2}
+      TELEGRAM_JOB_TTL_MINUTES: ${TELEGRAM_JOB_TTL_MINUTES:-180}
+      TELEGRAM_WORK_DIR: /data/telegram_full_jobs
+      NARTO_CACHE: /data/narto_cache
+    env_file:
+      - .env
+    volumes:
+      - narto_cache:/data/narto_cache
+      - telegram_full_jobs:/data/telegram_full_jobs
+    restart: unless-stopped
 
 volumes:
   telegram_api_data:
+  telegram_full_jobs:

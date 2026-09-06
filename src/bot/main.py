@@ -25,15 +25,24 @@ class DramaSelection:
     episodes: list[dict]
 
 
-def episode_keyboard(episodes: list[dict]) -> InlineKeyboardMarkup:
+def episode_keyboard(episodes: list[dict], *, full_only: bool = False) -> InlineKeyboardMarkup:
+    if full_only:
+        return InlineKeyboardMarkup([[InlineKeyboardButton("🎬 FULL — gabung semua episode", callback_data="full")]])
     buttons = [InlineKeyboardButton(f"Ep {item['number']:02d}", callback_data=f"ep:{item['number']}") for item in episodes]
     rows = [buttons[index : index + 4] for index in range(0, len(buttons), 4)]
-    rows.append([InlineKeyboardButton("📤 Kirim semua (per episode)", callback_data="all")])
+    rows.append([InlineKeyboardButton("📤 Download & kirim semua (satu per satu)", callback_data="all")])
     rows.append([InlineKeyboardButton("🎬 FULL — gabung semua episode", callback_data="full")])
     return InlineKeyboardMarkup(rows)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    full_only = context.application.bot_data["full_only"]
+    if full_only:
+        await update.effective_message.reply_text(
+            "🎬 Narto FULL Downloader\n\nKirim link drama dari narto-drama.com. Bot ini hanya membuat satu video FULL "
+            "dan dapat mengirim file besar hingga 1,9 GB."
+        )
+        return
     await update.effective_message.reply_text(
         "🎬 Narto Downloader\n\nKirim link drama dari narto-drama.com. Setelah itu pilih episode yang ingin dikirim."
         "\n\nFile hanya disimpan sementara selama proses kirim, lalu otomatis dihapus.",
@@ -54,12 +63,21 @@ async def receive_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 )
             except Exception as error:
                 LOG.info("poster unavailable: %s", error)
+        full_only = context.application.bot_data["full_only"]
+        detail = (
+            "🎬 Tekan tombol FULL untuk menggabungkan seluruh episode menjadi satu MP4 besar."
+            if full_only
+            else (
+                "📥 Pilih satu episode, atau pilih ‘Download & kirim semua’ untuk memproses seluruh episode "
+                "berurutan: download → kirim → hapus file → lanjut episode berikutnya."
+            )
+        )
         await status.edit_text(
             f"🎬 {title}\n\n"
             f"📚 {len(episodes)} episode tersedia\n"
-            "📥 Pilih episode di bawah, atau pilih FULL untuk menggabungkan semuanya menjadi satu MP4.\n\n"
+            f"{detail}\n\n"
             "ℹ️ File dibersihkan otomatis setelah berhasil dikirim.",
-            reply_markup=episode_keyboard(episodes),
+            reply_markup=episode_keyboard(episodes, full_only=full_only),
         )
     except Exception as error:
         LOG.info("resolve failed: %s", error)
@@ -75,6 +93,9 @@ async def send_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     is_full = query.data == "full"
     is_all = query.data == "all"
+    if context.application.bot_data["full_only"] and not is_full:
+        await query.edit_message_text("Bot ini hanya menangani tombol FULL. Kirim link lagi bila sesi sudah berakhir.")
+        return
     episode = None if is_full or is_all else int(query.data.split(":", 1)[1])
     settings: TelegramSettings = context.application.bot_data["settings"]
     semaphore: asyncio.Semaphore = context.application.bot_data["download_semaphore"]
@@ -234,8 +255,8 @@ async def _periodic_job_cleanup(application: Application) -> None:
             LOG.info("periodic cleanup removed %d Telegram job(s)", removed)
 
 
-def main() -> None:
-    settings = TelegramSettings.from_env()
+def run_bot(*, full_only: bool = False) -> None:
+    settings = TelegramSettings.from_env("TELEGRAM_FULL_BOT_TOKEN" if full_only else "TELEGRAM_BOT_TOKEN")
     builder = (
         Application.builder()
         .token(settings.token)
@@ -251,11 +272,16 @@ def main() -> None:
         )
     application = builder.build()
     application.bot_data["settings"] = settings
+    application.bot_data["full_only"] = full_only
     application.bot_data["download_semaphore"] = asyncio.Semaphore(settings.max_concurrent_downloads)
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(send_download, pattern=r"^(ep:\d+|all|full)$"))
+    application.add_handler(CallbackQueryHandler(send_download, pattern=r"^full$" if full_only else r"^(ep:\d+|all)$"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_url))
     application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+def main() -> None:
+    run_bot()
 
 
 if __name__ == "__main__":

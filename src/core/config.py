@@ -23,10 +23,10 @@ class TelegramSettings:
     api_base_url: str | None
 
     @classmethod
-    def from_env(cls) -> "TelegramSettings":
-        token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    def from_env(cls, token_variable: str = "TELEGRAM_BOT_TOKEN") -> "TelegramSettings":
+        token = os.environ.get(token_variable, "").strip()
         if not token:
-            raise RuntimeError("TELEGRAM_BOT_TOKEN belum diatur. Salin .env.example menjadi .env.")
+            raise RuntimeError(f"{token_variable} belum diatur. Salin .env.example menjadi .env.")
         raw_work_dir = os.environ.get("TELEGRAM_WORK_DIR", "./runtime/telegram_jobs")
         # `/data/...` is the Docker path. When a copied Docker .env is used
         # directly on Windows, keep temporary files inside this project instead.

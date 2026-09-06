@@ -8,6 +8,7 @@ Add these values yourself; never commit or paste them in chat:
 
 ```env
 TELEGRAM_BOT_TOKEN=your-new-bot-token
+TELEGRAM_FULL_BOT_TOKEN=your-second-bot-token
 TELEGRAM_API_ID=your_api_id
 TELEGRAM_API_HASH=your_api_hash
 ```
@@ -16,10 +17,10 @@ TELEGRAM_API_HASH=your_api_hash
 
 ```powershell
 docker compose -f docker-compose.yml -f docker-compose.local-api.yml pull
-docker compose -f docker-compose.yml -f docker-compose.local-api.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.local-api.yml up --build -d
 ```
 
-The stack uses the prebuilt `aiogram/telegram-bot-api` image (a maintained image of Telegram's open-source Bot API server), so no C++/TDLib compilation runs on the VPS. The regular `docker-compose.yml` retains its existing behavior; include the second compose file only for large Telegram uploads.
+The stack uses the prebuilt `aiogram/telegram-bot-api` image (a maintained image of Telegram's open-source Bot API server), so no C++/TDLib compilation runs on the VPS. `--build` only rebuilds the lightweight Python bot image after source changes; it does not compile C++/TDLib. The regular `docker-compose.yml` retains its existing behavior; include the second compose file only for large Telegram uploads.
 
 ## One-time migration from the cloud Bot API
 
@@ -30,6 +31,6 @@ set -a; . ./.env; set +a
 curl --fail-with-body "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/logOut"
 ```
 
-After it returns `"ok":true`, start the stack above. Do not run two bot containers with the same token at the same time.
+After it returns `"ok":true`, start the stack above. The project deliberately uses a **different token** for `telegram-full-bot`: Telegram doesn't allow one token to be logged in on Cloud and Local Bot API at the same time.
 
-The override makes the downloader bot use `http://telegram-api:8081` internally and permits files up to 1.9 GB. Keep enough free disk: a 600 MB FULL can temporarily use more than 1.2 GB while its episode files and final MP4 coexist.
+`telegram-bot` uses Cloud Bot API and sends episodes up to 49 MB. `telegram-full-bot` uses `http://telegram-api:8081` internally and only offers FULL uploads up to 1.9 GB. Keep enough free disk: a 600 MB FULL can temporarily use more than 1.2 GB while its episode files and final MP4 coexist.
