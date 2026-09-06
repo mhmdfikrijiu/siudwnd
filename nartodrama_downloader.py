@@ -35,6 +35,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from threading import Event
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 BASE_SITE = "https://narto-drama.com"
@@ -158,7 +159,7 @@ def is_valid_mp4(path: str) -> bool:
     except OSError:
         return False
 
-def concat_mp4s(parts: list[str], out_path: str) -> bool:
+def concat_mp4s(parts: list[str], out_path: str, cancel_event: Event | None = None) -> bool:
     if shutil.which("ffmpeg") is None:
         print("[ERR] ffmpeg not found", file=sys.stderr); return False
     lst = out_path + ".concat.txt"
@@ -172,9 +173,27 @@ def concat_mp4s(parts: list[str], out_path: str) -> bool:
                 f.write(f"file '{s}'\n")
         cmd = ["ffmpeg","-y","-hide_banner","-loglevel","error","-f","concat","-safe","0","-i",lst,"-c","copy", out_path]
         print(f"[*] Concat {len(parts)} episode -> {os.path.basename(out_path)} ...", flush=True)
-        r = subprocess.run(cmd, timeout=600, capture_output=True, text=True)
-        if r.returncode != 0:
-            print(f"[FAIL] concat: {r.stderr[:600]}", flush=True); return False
+        process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        deadline = time.monotonic() + 600
+        while process.poll() is None:
+            if cancel_event and cancel_event.is_set():
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+                print("[STOP] concat dibatalkan", flush=True)
+                return False
+            if time.monotonic() >= deadline:
+                process.kill()
+                process.wait()
+                print("[FAIL] concat timeout", flush=True)
+                return False
+            time.sleep(0.2)
+        stderr = process.stderr.read() if process.stderr else ""
+        if process.returncode != 0:
+            print(f"[FAIL] concat: {stderr[:600]}", flush=True); return False
         return is_valid_mp4(out_path)
     finally:
         try: os.remove(lst)
@@ -238,7 +257,7 @@ def _pick_play_url(ep: dict) -> str:
     return ""
 
 
-def download_episode_hls(m3u8_url: str, dest: str, referer: str) -> bool:
+def download_episode_hls(m3u8_url: str, dest: str, referer: str, cancel_event: Event | None = None) -> bool:
     """Remux HLS to mp4 via ffmpeg. Returns True on success."""
     if is_valid_mp4(dest):
         mb = os.path.getsize(dest) / 1_048_576
@@ -263,9 +282,31 @@ def download_episode_hls(m3u8_url: str, dest: str, referer: str) -> bool:
     ]
     print(f"  -> ffmpeg {os.path.basename(dest)} ...", flush=True)
     try:
-        result = subprocess.run(cmd, timeout=FFMPEG_TIMEOUT, capture_output=True, text=True)
-        if result.returncode != 0:
-            print(f"[FAIL] ffmpeg: {result.stderr.strip()[:400]}", flush=True)
+        process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        deadline = time.monotonic() + FFMPEG_TIMEOUT
+        while process.poll() is None:
+            if cancel_event and cancel_event.is_set():
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+                print("[STOP] ffmpeg dibatalkan", flush=True)
+                try: os.remove(tmp)
+                except OSError: pass
+                return False
+            if time.monotonic() >= deadline:
+                process.kill()
+                process.wait()
+                print("[FAIL] ffmpeg timeout", flush=True)
+                try: os.remove(tmp)
+                except OSError: pass
+                return False
+            time.sleep(0.2)
+        stderr = process.stderr.read() if process.stderr else ""
+        if process.returncode != 0:
+            print(f"[FAIL] ffmpeg: {stderr.strip()[:400]}", flush=True)
             try: os.remove(tmp)
             except OSError: pass
             return False
@@ -278,11 +319,6 @@ def download_episode_hls(m3u8_url: str, dest: str, referer: str) -> bool:
         mb = os.path.getsize(dest) / 1_048_576
         print(f"[ OK ] {os.path.basename(dest)} {mb:.1f} MB", flush=True)
         return True
-    except subprocess.TimeoutExpired:
-        print("[FAIL] ffmpeg timeout", flush=True)
-        try: os.remove(tmp)
-        except OSError: pass
-        return False
     except Exception as e:
         print(f"[FAIL] {e}", flush=True)
         try: os.remove(tmp)

@@ -4,14 +4,15 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
+from threading import Event
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import TimedOut
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 from telegram.request import HTTPXRequest
 
 from src.core.config import TelegramSettings
-from src.services.telegram_downloads import DownloadError, download_full, download_one, purge_work_dir, remove_job_file, resolve
+from src.services.telegram_downloads import DownloadCancelled, DownloadError, download_full, download_one, purge_work_dir, remove_job_file, resolve
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 LOG = logging.getLogger(__name__)
@@ -25,6 +26,20 @@ class DramaSelection:
     title: str
     poster: str
     episodes: list[dict]
+
+
+@dataclass
+class ActiveJob:
+    cancel_event: Event
+    task: asyncio.Task
+
+
+def job_key(update: Update) -> tuple[int, int]:
+    chat = update.effective_chat
+    user = update.effective_user
+    if chat is None or user is None:
+        raise RuntimeError("Chat atau pengguna tidak tersedia.")
+    return chat.id, user.id
 
 
 def episode_keyboard(episodes: list[dict], *, full_only: bool = False) -> InlineKeyboardMarkup:
@@ -48,6 +63,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(
         "🎬 Narto Downloader\n\nKirim link drama dari narto-drama.com. Setelah itu pilih episode yang ingin dikirim."
         "\n\nFile hanya disimpan sementara selama proses kirim, lalu otomatis dihapus.",
+    )
+
+
+async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    jobs: dict[tuple[int, int], ActiveJob] = context.application.bot_data["active_jobs"]
+    active = jobs.get(job_key(update))
+    if active is None or active.task.done():
+        await update.effective_message.reply_text("Tidak ada proses download atau upload yang sedang berjalan.")
+        return
+    active.cancel_event.set()
+    active.task.cancel()
+    await update.effective_message.reply_text(
+        "⏹ Proses dihentikan. Download/unggahan yang sedang berjalan dibatalkan dan file sementara akan dibersihkan."
     )
 
 
@@ -111,6 +139,16 @@ async def safe_edit_status(query, text: str) -> None:
 async def send_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
+    jobs: dict[tuple[int, int], ActiveJob] = context.application.bot_data["active_jobs"]
+    key = job_key(update)
+    current_task = asyncio.current_task()
+    if current_task is None:
+        raise RuntimeError("Task Telegram tidak tersedia.")
+    if key in jobs and not jobs[key].task.done():
+        await safe_edit_status(query, "⏳ Masih ada proses berjalan. Gunakan /stop untuk membatalkannya terlebih dahulu.")
+        return
+    active_job = ActiveJob(Event(), current_task)
+    jobs[key] = active_job
     selection: DramaSelection | None = context.user_data.get("drama")
     if not selection:
         await edit_status(query, "Sesi sudah berakhir. Kirim link drama lagi.")
@@ -147,6 +185,8 @@ async def send_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
 
     def on_full_progress(stage: str, number: int | None, _done: int, _total: int) -> None:
+        if active_job.cancel_event.is_set():
+            return
         if stage == "done" and number is not None:
             progress["done"].add(number)
             progress["retry"].discard(number)
@@ -175,7 +215,7 @@ async def send_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 next_episode_index += 1
                 number = item["number"]
                 pending_downloads[number] = asyncio.create_task(
-                    asyncio.to_thread(download_one, selection.slug, number, settings.work_dir),
+                    asyncio.to_thread(download_one, selection.slug, number, settings.work_dir, active_job.cancel_event),
                     name=f"download-episode-{number}",
                 )
 
@@ -183,6 +223,8 @@ async def send_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             async with semaphore:
                 prefetch_more()
                 for index, item in enumerate(selection.episodes, start=1):
+                    if active_job.cancel_event.is_set():
+                        raise DownloadCancelled("Download dihentikan.")
                     number = item["number"]
                     path = None
                     try:
@@ -246,6 +288,11 @@ async def send_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 f"📤 Terkirim ({len(sent)}/{len(selection.episodes)}): {sent_text}{failed_text}\n\n"
                 "File sementara di server telah dibersihkan."
             )
+        except DownloadCancelled:
+            await safe_edit_status(query, "⏹ Kirim semua dihentikan. File sementara sedang dibersihkan.")
+        except asyncio.CancelledError:
+            await safe_edit_status(query, "⏹ Kirim semua dihentikan. File sementara sedang dibersihkan.")
+            raise
         except Exception as error:
             LOG.exception("send-all failed")
             await edit_status(query, f"⚠️ Kirim semua berhenti: {error}")
@@ -258,6 +305,8 @@ async def send_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     await asyncio.to_thread(remove_job_file, leftover)
                 except Exception:
                     pass
+            if jobs.get(key) is active_job:
+                jobs.pop(key, None)
         return
     if is_full:
         await edit_status(query, progress_text())
@@ -271,10 +320,10 @@ async def send_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 path = await asyncio.to_thread(
                     download_full, selection.slug,
                     [item["number"] for item in selection.episodes], settings.work_dir,
-                    settings.max_concurrent_downloads, on_full_progress,
+                    settings.max_concurrent_downloads, on_full_progress, active_job.cancel_event,
                 )
             else:
-                path = await asyncio.to_thread(download_one, selection.slug, episode, settings.work_dir)
+                path = await asyncio.to_thread(download_one, selection.slug, episode, settings.work_dir, active_job.cancel_event)
         size = path.stat().st_size
         LOG.info(
             "download ready: %s (%.1f MB) in %.1fs",
@@ -311,12 +360,19 @@ async def send_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             return
         LOG.info("Telegram upload confirmed: %s in %.1fs", path.name, time.monotonic() - upload_started)
         await safe_edit_status(query, "✅ File terkirim dan salinan sementara di server sudah dibersihkan.")
+    except DownloadCancelled:
+        await safe_edit_status(query, "⏹ Proses dihentikan. File sementara sedang dibersihkan.")
+    except asyncio.CancelledError:
+        await safe_edit_status(query, "⏹ Proses dihentikan. File sementara sedang dibersihkan.")
+        raise
     except Exception as error:
         LOG.exception("episode delivery failed")
         await edit_status(query, f"⚠️ Gagal: {error}")
     finally:
         if path:
             await asyncio.to_thread(remove_job_file, path)
+        if jobs.get(key) is active_job:
+            jobs.pop(key, None)
 
 
 async def post_init(application: Application) -> None:
@@ -325,6 +381,12 @@ async def post_init(application: Application) -> None:
     removed = await asyncio.to_thread(purge_work_dir, settings.work_dir, settings.job_ttl_seconds)
     if removed:
         LOG.info("removed %d abandoned Telegram job(s)", removed)
+    await application.bot.set_my_commands(
+        [
+            BotCommand("start", "Tampilkan petunjuk bot"),
+            BotCommand("stop", "Hentikan download atau upload aktif"),
+        ]
+    )
     if application.job_queue is None:
         raise RuntimeError("Telegram job queue tidak tersedia. Install dependensi dari requirements.txt.")
     application.job_queue.run_repeating(
@@ -380,7 +442,9 @@ def run_bot(*, full_only: bool = False) -> None:
     application.bot_data["settings"] = settings
     application.bot_data["full_only"] = full_only
     application.bot_data["download_semaphore"] = asyncio.Semaphore(settings.max_concurrent_downloads)
+    application.bot_data["active_jobs"] = {}
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("stop", stop))
     application.add_handler(CallbackQueryHandler(send_download, pattern=r"^full$" if full_only else r"^(ep:\d+|all)$"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_url))
     application.run_polling(allowed_updates=Update.ALL_TYPES)
