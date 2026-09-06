@@ -41,8 +41,9 @@ if BASE_PATH:
 CACHE = pathlib.Path(os.environ.get("NARTO_CACHE") or pathlib.Path(tempfile.gettempdir()) / "narto_cache")
 CACHE.mkdir(exist_ok=True, parents=True)
 
-CACHE_TTL = 24 * 3600
+CACHE_TTL = max(1, int(os.environ.get("NARTO_CACHE_TTL_HOURS", "24"))) * 3600
 CACHE_SWEEP_EVERY = 3600
+RESULT_TTL = max(60, int(os.environ.get("NARTO_RESULT_TTL", "3600")))
 CACHE_MAX_BYTES = int(os.environ.get("NARTO_CACHE_MAX_BYTES") or 10 * 1024**3)
 try:
     if os.environ.get("NARTO_CACHE_MAX_MB"):
@@ -104,10 +105,31 @@ def _cache_sweeper_loop():
         time.sleep(CACHE_SWEEP_EVERY)
         try:
             deleted, freed = _cache_sweep_once()
+            removed_results = _cleanup_expired_results()
             if deleted:
                 print(f"[CACHE] sweep {deleted} file(s) {freed/1_048_576:.1f} MB (TTL {CACHE_TTL//3600}h)", flush=True)
+            if removed_results:
+                print(f"[RESULT] removed {removed_results} expired job(s)", flush=True)
         except Exception as e:
             print(f"[CACHE] sweep err: {e}", flush=True)
+
+
+def _cleanup_expired_results() -> int:
+    """Remove completed ZIP/FULL files even if the browser never downloads them."""
+    cutoff = time.time() - RESULT_TTL
+    expired: list[tuple[str, str | None]] = []
+    with JOBS_LOCK:
+        for job_id, job in list(JOBS.items()):
+            if job.get("status") in {"done", "error"} and job.get("updated", job.get("created", 0)) < cutoff:
+                expired.append((job_id, job.get("result_path")))
+                JOBS.pop(job_id, None)
+    for _, raw_path in expired:
+        if raw_path:
+            try:
+                pathlib.Path(raw_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+    return len(expired)
 
 _EP_CACHE_APP: dict[str, tuple[float, tuple[list[dict], str, str]]] = {}
 _EP_CACHE_TTL = 600

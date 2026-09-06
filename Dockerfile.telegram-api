@@ -1,0 +1,17 @@
+# Separate, self-hosted Telegram Bot API Server.
+# Built from Telegram's official source so the bot can upload files up to 2 GB.
+FROM ubuntu:24.04 AS build
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates cmake g++ git gperf libssl-dev make zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN git clone --recursive https://github.com/tdlib/telegram-bot-api.git /src/telegram-bot-api
+RUN cmake -S /src/telegram-bot-api -B /build -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build /build --target telegram-bot-api --parallel 2
+
+FROM ubuntu:24.04
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3 zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /build/telegram-bot-api /usr/local/bin/telegram-bot-api
+EXPOSE 8081
+ENTRYPOINT ["telegram-bot-api"]

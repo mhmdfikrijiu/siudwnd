@@ -1,0 +1,28 @@
+# Optional override: run with
+# docker compose -f docker-compose.yml -f docker-compose.local-api.yml up --build
+services:
+  telegram-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.telegram-api
+    command:
+      - --api-id=${TELEGRAM_API_ID:?Set TELEGRAM_API_ID in .env}
+      - --api-hash=${TELEGRAM_API_HASH:?Set TELEGRAM_API_HASH in .env}
+      - --local
+      - --dir=/var/lib/telegram-bot-api
+      - --http-port=8081
+    expose:
+      - "8081"
+    volumes:
+      - telegram_api_data:/var/lib/telegram-bot-api
+    restart: unless-stopped
+
+  telegram-bot:
+    depends_on:
+      - telegram-api
+    environment:
+      TELEGRAM_API_BASE_URL: http://telegram-api:8081
+      TELEGRAM_MAX_UPLOAD_MB: 1900
+
+volumes:
+  telegram_api_data:

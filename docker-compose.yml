@@ -7,10 +7,28 @@ services:
       - narto_cache:/data/narto_cache
     environment:
       - NARTO_CACHE=/data/narto_cache
-      - NARTO_CACHE_MAX_MB=10240
-      - NARTO_BASE_PATH=/narto
-      - PORT=5000
+      - NARTO_CACHE_MAX_MB=${NARTO_CACHE_MAX_MB:-1024}
+      - NARTO_CACHE_TTL_HOURS=${NARTO_CACHE_TTL_HOURS:-2}
+      - NARTO_BASE_PATH=${NARTO_BASE_PATH:-/narto}
+      - PORT=${PORT:-5000}
+    restart: unless-stopped
+
+  telegram-bot:
+    build: .
+    command: ["python", "-m", "src.bot.main"]
+    volumes:
+      - narto_cache:/data/narto_cache
+      - telegram_jobs:/data/telegram_jobs
+    env_file:
+      - .env
+    environment:
+      - NARTO_CACHE=/data/narto_cache
+      - TELEGRAM_WORK_DIR=/data/telegram_jobs
+      - TELEGRAM_MAX_UPLOAD_MB=${TELEGRAM_MAX_UPLOAD_MB:-45}
+      - TELEGRAM_MAX_CONCURRENT_DOWNLOADS=${TELEGRAM_MAX_CONCURRENT_DOWNLOADS:-2}
+      - TELEGRAM_JOB_TTL_MINUTES=${TELEGRAM_JOB_TTL_MINUTES:-180}
     restart: unless-stopped
 
 volumes:
   narto_cache:
+  telegram_jobs:

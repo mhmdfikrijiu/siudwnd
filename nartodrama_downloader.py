@@ -165,7 +165,10 @@ def concat_mp4s(parts: list[str], out_path: str) -> bool:
     try:
         with open(lst, "w", encoding="utf-8") as f:
             for p in parts:
-                s = p.replace("'", "'\\''")
+                # The concat demuxer treats Windows backslashes as escapes.
+                # Use an absolute forward-slash path so it works on Windows
+                # and remains valid with `-safe 0` on Linux containers.
+                s = Path(p).resolve().as_posix().replace("'", "'\\''")
                 f.write(f"file '{s}'\n")
         cmd = ["ffmpeg","-y","-hide_banner","-loglevel","error","-f","concat","-safe","0","-i",lst,"-c","copy", out_path]
         print(f"[*] Concat {len(parts)} episode -> {os.path.basename(out_path)} ...", flush=True)

@@ -5,3 +5,7 @@ venv/
 downloads/
 .env
 narto_cache/
+.env
+runtime/
+data/
+backup file (jangan diganggu)/

@@ -1,7 +1,11 @@
 __pycache__
 *.pyc
 .git
+.env
 .venv
 venv
-downloads
-.env
+runtime
+data
+backup file (jangan diganggu)
+patches
+*.md
